@@ -59,6 +59,23 @@ const CHANNEL_MAPS: [[Option<ElementType>; MAX_CHANNELS]; MAX_CHANNELS] = [
 ];
 
 #[must_use]
+/// One little-endian sample out of a packed byte buffer, by sample index.
+///
+/// These replace `slice::from_raw_parts(input.as_ptr() as *const i16, ..)` and
+/// its `i32` twin. `input` is a `&[u8]` and carries byte alignment only, so
+/// the cast was undefined behaviour however reliably x86 executes the load it
+/// compiles to; and it was native-endian in a crate whose other reads of the
+/// same bytes are explicitly little-endian.
+fn read_i16(input: &[u8], index: usize) -> i16 {
+    let at = index * 2;
+    i16::from_le_bytes([input[at], input[at + 1]])
+}
+
+fn read_i32(input: &[u8], index: usize) -> i32 {
+    let at = index * 4;
+    i32::from_le_bytes([input[at], input[at + 1], input[at + 2], input[at + 3]])
+}
+
 const fn max_packet_size(bit_depth: usize, channels_per_frame: usize, frames_per_packet: usize) -> usize {
     let sce = 3 + 4 + 12 + 4 + (bit_depth * frames_per_packet);
     let cpe = 3 + 4 + 12 + 4 + (bit_depth * 2 * frames_per_packet);
@@ -385,9 +402,8 @@ impl AlacEncoder {
         match self.bit_depth {
             16 => {
                 // convert 16-bit data to 32-bit for predictor
-                let input16 = unsafe { core::slice::from_raw_parts(input.as_ptr() as *const i16, num_samples * stride) };
                 for index in 0..num_samples {
-                    self.mix_buffer_u[index] = input16[index * stride] as i32;
+                    self.mix_buffer_u[index] = read_i16(input, index * stride) as i32;
                 }
             },
             20 => {
@@ -404,10 +420,8 @@ impl AlacEncoder {
             },
             32 => {
                 // just copy the 32-bit input data for the predictor and extract the shifted off byte(s)
-                let input32 = unsafe { core::slice::from_raw_parts(input.as_ptr() as *const i32, num_samples * stride) };
-
                 for index in 0..num_samples {
-                    let val = input32[index * stride];
+                    let val = read_i32(input, index * stride);
 
                     self.shift_buffer_uv[index] = ((val as u32) & mask) as u16;
                     self.mix_buffer_u[index] = val >> shift;
@@ -508,9 +522,8 @@ impl AlacEncoder {
             // just copy the input data to the output buffer
             match self.bit_depth {
                 16 => {
-                    let input16 = unsafe { core::slice::from_raw_parts(input.as_ptr() as *const i16, num_samples * stride) };
                     for index in (0..(num_samples * stride)).step_by(stride) {
-                        bitstream.write_lte25(input16[index] as u32, 16);
+                        bitstream.write_lte25(read_i16(input, index) as u32, 16);
                     }
                 },
                 20 => {
@@ -528,9 +541,8 @@ impl AlacEncoder {
                     }
                 },
                 32 => {
-                    let input32 = unsafe { core::slice::from_raw_parts(input.as_ptr() as *const i32, num_samples * stride) };
                     for index in (0..(num_samples * stride)).step_by(stride) {
-                        bitstream.write(input32[index] as u32, 32);
+                        bitstream.write(read_i32(input, index) as u32, 32);
                     }
                 },
                 _ => panic!("Invalid mBitDepth"),
@@ -552,11 +564,9 @@ impl AlacEncoder {
         // just copy the input data to the output buffer
         match self.bit_depth {
             16 => {
-                let input16 = unsafe { core::slice::from_raw_parts(input.as_ptr() as *const i16, num_samples * stride) };
-
                 for index in (0..(num_samples * stride)).step_by(stride) {
-                    bitstream.write_lte25(input16[index] as u32, 16);
-                    bitstream.write_lte25(input16[index + 1] as u32, 16);
+                    bitstream.write_lte25(read_i16(input, index) as u32, 16);
+                    bitstream.write_lte25(read_i16(input, index + 1) as u32, 16);
                 }
             },
             20 => {
@@ -576,11 +586,9 @@ impl AlacEncoder {
                 }
             },
             32 => {
-                let input32 = unsafe { core::slice::from_raw_parts(input.as_ptr() as *const i32, num_samples * stride) };
-
                 for index in (0..(num_samples * stride)).step_by(stride) {
-                    bitstream.write(input32[index] as u32, 32);
-                    bitstream.write(input32[index + 1] as u32, 32);
+                    bitstream.write(read_i32(input, index) as u32, 32);
+                    bitstream.write(read_i32(input, index + 1) as u32, 32);
                 }
             },
             _ => panic!("Invalid mBitDepth"),
