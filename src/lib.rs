@@ -78,17 +78,13 @@ const fn max_packet_size(bit_depth: usize, channels_per_frame: usize, frames_per
     (channel_bits + 3 + 7) / 8
 }
 
-pub trait PcmFormat {
-    fn bits() -> u32;
-    fn bytes() -> u32;
-    fn flags() -> u32;
-}
-
-impl PcmFormat for i16 {
-    fn bits() -> u32 { 16 }
-    fn bytes() -> u32 { 2 }
-    fn flags() -> u32 { 4 }
-}
+/// The sample widths a `FormatDescription` may be built with.
+///
+/// Apple's format carries 20-bit too, and `mix20` and `copy20_to_predictor`
+/// implement it, but it is left out here because there is no fixture to test
+/// it against and a width that is offered but unverified is worse than one
+/// that is refused.
+pub const SUPPORTED_BIT_DEPTHS: [u32; 3] = [16, 24, 32];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FormatType {
@@ -108,23 +104,33 @@ pub struct FormatDescription {
 }
 
 impl FormatDescription {
+    /// Interleaved little-endian PCM, packed at `bits`, with no padding byte.
+    ///
+    /// `bits` must be one of [`SUPPORTED_BIT_DEPTHS`], and must match the width
+    /// of the `alac` description it is encoded against.
     #[must_use]
-    pub fn pcm<T: PcmFormat>(sample_rate: f64, channels: u32) -> FormatDescription {
+    pub fn pcm(sample_rate: f64, channels: u32, bits: u32) -> FormatDescription {
         assert!(channels > 0 && channels <= MAX_CHANNELS as u32);
+        assert!(SUPPORTED_BIT_DEPTHS.contains(&bits), "unsupported bit depth {bits}");
 
         FormatDescription {
             sample_rate,
             format_id: FormatType::LinearPcm,
-            bytes_per_packet: channels * T::bytes(),
+            bytes_per_packet: channels * ((bits + 7) / 8),
             frames_per_packet: 1,
             channels_per_frame: channels,
-            bits_per_channel: T::bits(),
+            bits_per_channel: bits,
         }
     }
 
+    /// `bits` must be one of [`SUPPORTED_BIT_DEPTHS`].
+    ///
+    /// Spelled out rather than using `SUPPORTED_BIT_DEPTHS.contains` so that
+    /// this stays a `const fn`.
     #[must_use]
-    pub const fn alac(sample_rate: f64, frames_per_packet: u32, channels: u32) -> FormatDescription {
+    pub const fn alac(sample_rate: f64, frames_per_packet: u32, channels: u32, bits: u32) -> FormatDescription {
         assert!(channels > 0 && channels <= MAX_CHANNELS as u32);
+        assert!(bits == 16 || bits == 24 || bits == 32, "unsupported bit depth, see SUPPORTED_BIT_DEPTHS");
 
         FormatDescription {
             sample_rate,
@@ -132,7 +138,7 @@ impl FormatDescription {
             bytes_per_packet: 0,
             frames_per_packet,
             channels_per_frame: channels,
-            bits_per_channel: 16,
+            bits_per_channel: bits,
         }
     }
 
@@ -291,6 +297,15 @@ impl AlacEncoder {
 
     pub fn encode(&mut self, input_format: &FormatDescription, input_data: &[u8], output_data: &mut [u8]) -> usize {
         assert_eq!(input_format.format_id, FormatType::LinearPcm);
+        // The loop below strides the input by the *output* width, so a mismatch
+        // is not an error anywhere: it silently reads every sample at the wrong
+        // offset and encodes noise, losslessly. Unreachable while 16 was the
+        // only constructible width, and very easy to hit now.
+        assert_eq!(
+            input_format.bits_per_channel as usize, self.bit_depth,
+            "input is {}-bit and the encoder writes {}-bit",
+            input_format.bits_per_channel, self.bit_depth,
+        );
 
         let num_frames = input_data.len() / (input_format.bytes_per_packet as usize);
         assert!(num_frames <= self.frame_size);
@@ -809,8 +824,8 @@ mod tests {
     }
 
     fn test_case (input: &str, expected: &str, frame_size: u32, channels: u32) {
-        let input_format = FormatDescription::pcm::<i16>(44100.0, channels);
-        let output_format = FormatDescription::alac(44100.0, frame_size, channels);
+        let input_format = FormatDescription::pcm(44100.0, channels, 16);
+        let output_format = FormatDescription::alac(44100.0, frame_size, channels, 16);
 
         let mut encoder = AlacEncoder::new(&output_format);
 
