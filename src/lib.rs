@@ -128,7 +128,7 @@ impl FormatDescription {
     #[must_use]
     pub fn pcm(sample_rate: f64, channels: u32, bits: u32) -> FormatDescription {
         assert!(channels > 0 && channels <= MAX_CHANNELS as u32);
-        assert!(SUPPORTED_BIT_DEPTHS.contains(&bits), "unsupported bit depth {bits}");
+        assert!(SUPPORTED_BIT_DEPTHS.contains(&bits), "unsupported bit depth {}", bits);
 
         FormatDescription {
             sample_rate,
